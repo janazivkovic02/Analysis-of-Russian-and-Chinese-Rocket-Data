@@ -1,0 +1,597 @@
+---
+title: "Projekat iz Statističkog softvera 3"
+author: "Jana Živković"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: 
+    highlight: tango
+    fig_width: 7
+    fig_height: 6
+    fig_caption: true
+    latex_engine: xelatex
+geometry: margin=1in
+fontsize: 11pt
+header-includes:
+  - \usepackage{graphicx}
+  - \usepackage{fancyhdr}
+  - \usepackage{booktabs}
+  - \usepackage{caption}
+  - \usepackage{xcolor}
+  - \usepackage{setspace}
+  - \usepackage{hyperref}
+  - \hypersetup{colorlinks=true, linkcolor=blue, filecolor=magenta, urlcolor=blue, pdftitle={Styled PDF}, pdfpagemode=FullScreen}
+  - \usepackage{fontspec}
+  - \setstretch{1.5} 
+  - \setlength{\textfloatsep}{10pt plus 1pt minus 2pt} 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width = 5, fig.height = 4)
+```
+
+## Učitavanje podataka
+
+```{r učitavanje podataka}
+library(readODS)
+rakete <- read_ods(
+  "/home/janazivkovic/Documents/Faks/7 semestar/Statisticki softver 3/Projekat/data/rakete.ods",
+  sheet = 1)
+```
+
+U bazi podataka rakete postoje dve kolone za ime rakete (rusko_ime i NATO_ime) i tri kolone koje predstavljaju kategoričke vrednosti. 
+
+```{r sređivanje kategoričkih vrednosti, message=FALSE, warning=FALSE}
+library(dplyr)
+rakete <- rakete %>%
+  mutate(
+    klasa_po_dometu = case_when(
+      klasa_po_dometu == "S" ~ 1,
+      klasa_po_dometu == "M" ~ 2,
+      klasa_po_dometu == "L" ~ 3
+    ),
+    tip_goriva = case_when(
+      tip_goriva == "Tecno" ~ 1,
+      tip_goriva == "Cvrsto" ~ 2
+    ),
+    nacin_lansiranja = case_when(
+      nacin_lansiranja == "Silos" ~ 1,
+      nacin_lansiranja == "RM TEL" ~ 2,
+      nacin_lansiranja == "Mornaricki" ~ 3,
+      nacin_lansiranja == "Avion" ~ 4
+    )
+  )
+```
+
+Iz imena mogu izvući još neke informacije o podacima. U koloni NATO_ime stoje imena raketa po NATO notaciji. U tri reda imena ne prate kriterijum zapisivanja raketa, njih mozemo da prepravimo.
+
+```{r popunjavanje imena}
+rakete$NATO_ime[39] <- "CSS-X-11"
+rakete$NATO_ime[33] <- "CSS-18"
+rakete$NATO_ime[16] <- "AS-24" 
+```
+
+NATO imena raketa prate sledeće pravilo: ukoliko ime počinje sa CSS to je raketa kineske proizvodnje dok je inače raketa ruske proizvodnje. Ovo takođe možemo da dodamo kao kategoričku kolonu u bazi podataka.
+
+```{r izdvajanje država}
+rakete <- rakete %>%
+  mutate(drzava = case_when(
+    startsWith(NATO_ime, "SS") ~ "R",
+    startsWith(NATO_ime, "CSS") ~ "Ch",
+    TRUE ~ "Unknown"
+  ))
+
+rakete$drzava[16] <- "R"
+rakete <- rakete %>%
+  mutate(
+    drzava = case_when(
+      drzava == "R" ~ 1,
+      drzava == "Ch" ~ 2
+    )
+  )
+```
+
+Drugo pravilo koje prati ova kolona je sledeće, ukoliko raketa u svom nazivu ima slovo N ona je lansirana sa broda ili podmornice, inače je lansirana sa kopna, osim u slučaju rakete AS-24 koja je raketa koja se lansira iz aviona.
+
+```{r sredjivanje imena, echo=FALSE}
+rakete <- rakete %>%
+  mutate(NATO_ime = gsub("(CSS-\\d+).*", "\\1", NATO_ime))
+
+rakete <- rakete %>%
+  mutate(NATO_ime = gsub("(CSS-N-\\d+).*", "\\1", NATO_ime))
+
+rakete <- rakete %>%
+  mutate(NATO_ime = gsub("(SS-\\d+).*", "\\1", NATO_ime))
+
+rakete <- rakete %>%
+  mutate(NATO_ime = gsub("(SS-N-\\d+).*", "\\1", NATO_ime))
+
+rakete <- rakete %>%
+  mutate(NATO_ime = gsub("(SS-X-\\d+).*", "\\1", NATO_ime))
+```
+
+## Rad sa nedostajućim podacima
+
+```{r redovi sa nedostajućim podacima, echo=FALSE}
+redovi_sa_nedostajucim_podacima <- rakete[apply(rakete, 1, function(row) any(is.na(row))), ]
+print(redovi_sa_nedostajucim_podacima)
+```
+
+Nedostajuće vrednosti se nalaze u dve vrste i odnose se na rakete Dong Feng, pa možemo da detaljnije posmatramo baš te rakete.
+
+```{r redovi sa dong feng raketama, echo=FALSE}
+rakete_dong_feng <- rakete[grepl("^Dong Feng \\d+", rakete$rusko_ime), ]
+print(rakete_dong_feng)
+```
+Rakete Dong Feng 4 i 5 su jedine koje imaju drugačiji način lansiranja i tip goriva. Takođe ostale rakete u tabeli su numerisene od 10 pa naviše i njihova numeracija prati rastući poredak, kao i njihove mase i dužine. Zbog ovoga ću te dve vrste da zanemarim na trenutak dok pretpostavljam nedostajuće vrednosti za raketu Dong Feng 16.
+
+```{r redovi sa dong feng raketama drugi deo,echo=FALSE}
+rakete_dong_feng <- rakete_dong_feng[-c(8,9),]
+print(rakete_dong_feng)
+```
+Pored linearnosti koju možemo da uočimo, možemo i da prepostavimo prirodno da ove vrednosti rastu kako raste redni broj rakete iz određene serije. Zbog rastućeg poretka, nedostajuće vrednosti ovde ću da pretpostavim metodom interpolacije. **na.approx** funkcija zamenjuje nedostajuće vrednosti (NA) u nizu linearnom interpolacijom (tj. srednjom vrednošću susednih vrednosti).   
+
+```{r interpolacija, message=FALSE, warning=FALSE}
+library(zoo)
+interpolacija <- rakete_dong_feng
+posmatrane_kolone <- c("masa_kg", "duzina_m")
+for (col in posmatrane_kolone) {
+  interpolacija[[col]] <- na.approx(rakete_dong_feng[[col]],
+                                        na.rm = FALSE)  
+}
+print(interpolacija)
+
+rakete[31,3]<-interpolacija[4,3]
+rakete[31,4]<- interpolacija[4,4]
+```
+Ostaje samo da popunimo i nedostajuću vrednost rakete Dong Feng 26 u koloni broj_podglava. Za ovu kolonu ne uočavamo pravilnosti koje se uočavaju za masu i dužinu. 
+
+Ideja je da ovde primenimo linearnu regresiju, ali pre toga možemo da posmatramo korelisanost. 
+
+```{r korelacija, message=FALSE, warning=FALSE, fig.align='center'}
+library(corrplot)
+corrplot(cor(rakete[-33,-c(1,2)]))
+```
+
+Zbog velike korelisanosti, koristićemo analzu glavnih komponenti.
+
+```{r popunjavanje nedostajućeg broja podglava, message=FALSE, warning=FALSE}
+library(caret)
+preProc <- preProcess(rakete[-33, c(3,4,5,7,8)], method = "pca", pcaComp = 2)
+PCA <- predict(preProc, rakete[-33, c(3,4,5,7,8)])
+PCA$broj_podglava <- rakete$broj_podglava[-33]
+
+model <- train(broj_podglava ~ ., data = PCA, method = "lm")
+
+testPCA <- predict(preProc, rakete[33,c(3,4,5,7,8)])
+
+broj_podglava_NA <- predict(model, newdata = testPCA)
+broj_podglava_NA <- round(broj_podglava_NA)
+
+rakete[33,6] <- broj_podglava_NA
+print(rakete[33,])
+```
+
+Napomena: Za popunjavanje nedostajućih vrednosti nisam koristila vrednosti koje kasnije pokušavam da predvidim i modeliram kao max_domet_km, nacin_lansiranja itd.  
+
+## Predviđanje maksimalnog dometa
+
+Zbog velike korelisanosti među kolonama očekujem se da linearni model ponaša malo čudno.
+
+```{r linearni model}
+linearni_model<- lm(max_domet_km ~ . -rusko_ime - NATO_ime , data = rakete)
+summary(linearni_model)
+```
+
+Vidimo da je p vrednost F statistike jako mala, ali da su pojedinačne p vrednosti posmatranih karakteristika velike, što je i očekivano zbog kolinearnosti. Sada ću posmatrati podskup ovih obeležja i probati da napravim linearni model.
+
+```{r manji linearni model}
+linearni_model_2 <- lm(max_domet_km ~ duzina_m + payload_kg + broj_faza_motora 
+                       + klasa_po_dometu + tip_goriva, data = rakete)
+summary(linearni_model_2)
+```
+
+```{r anova}
+anova(linearni_model_2, linearni_model)
+```
+
+Kada uporedimo ove modele vidimo da možemo da prihvatimo hipotezu da su koeficijenti uz obeležja koja nisu navedena u drugom modelu 0. Dakle biramo drugi model. Proverimo i VIF koeficijente drugog modela
+
+```{r vif, message=FALSE, warning=FALSE}
+library(car)
+vif(linearni_model_2)
+```
+
+Sve vrednosti su ispod 5.
+
+Za proveravanje kvaliteta modela ću koristiti unakrsnu validaciju. Pored modela linearne regresije, napraviću i ridge i lasso model, a takođe ću da primenim analizu glavnih komponenti i napravim i taj model.
+
+```{r unakrsna validacija, message=FALSE, warning=FALSE}
+set.seed(126)
+foldovi <- createFolds(rakete$max_domet_km, k = 13)
+df<-rakete[,-c(1,2)]
+
+cv_results_lm <- lapply(foldovi, function(fold_indeks) {
+  train_data <- df[-fold_indeks, ]
+  test_data <- df[fold_indeks, ]
+
+  model <- lm(max_domet_km ~ . , data = train_data)
+  predikcije <- predict(model, test_data)
+  
+  stvarne_vrednosti <- test_data$max_domet_km
+  r2 <- 1 - sum((stvarne_vrednosti - predikcije)^2) / sum((stvarne_vrednosti - mean(stvarne_vrednosti))^2)
+  return(r2)
+})
+r2_linearni_model_2 <- mean(unlist(cv_results_lm))
+
+library(glmnet)
+cv_results_lasso <- lapply(foldovi, function(fold_indeksi) {
+  train_data <- rakete[-fold_indeksi, ]
+  test_data <- rakete[fold_indeksi, ]
+  
+  X_train <- as.matrix(train_data[, -c(1,2,9)])
+  y_train <- train_data$max_domet_km
+  X_test <-  as.matrix(test_data[, -c(1,2,9)])
+  y_test <- test_data$max_domet_km
+  
+  lasso_model <- cv.glmnet(X_train, y_train, alpha = 1)
+  najbolje_lambda <- lasso_model$lambda.min
+  
+  predikcije <- predict(lasso_model, newx = X_test, s = najbolje_lambda)
+  
+  r2 <- 1 - sum((y_test - predikcije)^2) / sum((y_test - mean(y_test))^2)
+  return(r2)
+})
+r2_lasso <- mean(unlist(cv_results_lasso))
+
+cv_results_ridge <- lapply(foldovi, function(fold_indeksi) {
+  train_data <- rakete[-fold_indeksi, ]
+  test_data <- rakete[fold_indeksi, ]
+  
+  X_train <- as.matrix(train_data[, -c(1,2,9)])
+  y_train <- train_data$max_domet_km
+  X_test <-  as.matrix(test_data[, -c(1,2,9)])
+  y_test <- test_data$max_domet_km
+  
+  ridge_model <- cv.glmnet(X_train, y_train, alpha = 0)
+  najbolje_lambda <- ridge_model$lambda.min
+  
+  predikcije <- predict(ridge_model, newx = X_test, s = najbolje_lambda)
+  
+  r2 <- 1 - sum((y_test - predikcije)^2) / sum((y_test - mean(y_test))^2)
+  return(r2)
+})
+r2_ridge <- mean(unlist(cv_results_ridge))
+
+cv_results_PCA <- lapply(foldovi, function(fold_indeksi){
+  train_data <- rakete[-fold_indeksi, ]
+  test_data <- rakete[fold_indeksi, ]
+  
+  preProc <- preProcess(train_data[, -c(1,2,9)], method = "pca", pcaComp = 5)
+  trainPCA <- predict(preProc, train_data[, -c(1,2,9)])
+  testPCA <- predict(preProc, test_data[, -c(1,2,9)])
+  
+  trainPCA$max_domet_km <- train_data$max_domet_km
+  testPCA$max_domet_km <- test_data$max_domet_km
+
+  model <- train(max_domet_km ~ ., data = trainPCA, method = "lm")
+  predikcije <- predict(model, newdata = testPCA)
+                         
+  r2 <- 1 - sum((test_data$max_domet_km - predikcije)^2) / 
+    sum((test_data$max_domet_km - mean(test_data$max_domet_km ))^2)
+  return(r2)                       
+})
+r2_PCA <- mean(unlist(cv_results_PCA))
+
+rezultati <- data.frame(
+  Model = c("Linearni model 2", "Lasso", "Ridge", "PCA"),
+  Mean_R2 = c(r2_linearni_model_2, r2_lasso, r2_ridge, r2_PCA)
+)
+print(rezultati) 
+```
+
+Najbolji je PCA model.
+
+```{r konačni model}
+final_preProc <- preProcess(rakete[, -c(1,2,9)], method = "pca", pcaComp = 5)
+raketePCA <- predict(final_preProc, rakete[, -c(1,2,9)])
+raketePCA$max_domet_km <- rakete$max_domet_km
+finalni_model <- train(max_domet_km ~ ., data = raketePCA, method = "lm")
+```
+
+## Klasifikacija lansera
+
+Sada možemo da napravimo novu kolonu koja govori da li je lansiranje rakete sa kopna ili ne. Jedine rakete koje imaju fiksni lanser su one lansirane iz silosa, a to su jedan od dva kopnena načina lansiranja, pa ova kolona izdvojena na osnovu imena može biti korisna u daljem radu.
+
+```{r sredjivanje podataka prvi deo}
+rakete_za_klasifikaciju <- rakete
+rakete_za_klasifikaciju <- rakete %>%
+  mutate(kopneno_lansiranje = case_when(
+    grepl("^SS-\\d+$", NATO_ime) ~ 0,     
+    grepl("^SS-X-\\d+$", NATO_ime) ~ 0,  
+    grepl("^SS-N-\\d+$", NATO_ime) ~ 1,          
+    grepl("^AS-\\d+$", NATO_ime) ~ 2,         
+    grepl("^CSS-\\d+$", NATO_ime) ~ 0,       
+    grepl("^CSS-N-\\d+$", NATO_ime) ~ 1,        
+    grepl("^CSS-X-\\d+$", NATO_ime) ~ 1,
+    TRUE ~ NA_real_
+    ))
+rakete_za_klasifikaciju <- rakete_za_klasifikaciju %>%
+   mutate(
+    kopneno_lansiranje = case_when(
+      kopneno_lansiranje == 0 ~ 1,
+      kopneno_lansiranje == 1 ~ 0,
+      kopneno_lansiranje == 2 ~ 0
+    )
+  )
+```
+
+Sada kada su izvođene korisne informacije iz kolona za ime možemo da ih uklonimo iz baze.
+
+```{r sredjivanje podataka drugi deo, echo=FALSE}
+rakete_za_klasifikaciju <- rakete_za_klasifikaciju %>% select(-NATO_ime)
+rakete_za_klasifikaciju <- rakete_za_klasifikaciju %>% select(-rusko_ime)
+```
+
+Preostaje da napravimo još jednu kolonu koja govori o tome da li je lanser fiksan ili ne.
+
+```{r sredjivanje podataka treći deo}
+rakete_za_klasifikaciju <- rakete_za_klasifikaciju %>%
+   mutate(
+    fiksni_lanser = case_when(
+      nacin_lansiranja == 1 ~ 1,
+      nacin_lansiranja == 2 ~ 0,
+      nacin_lansiranja == 3 ~ 0,
+      nacin_lansiranja == 4 ~ 0
+    )
+  ) 
+rakete_za_klasifikaciju <- rakete_za_klasifikaciju %>% select(-nacin_lansiranja)
+rakete_za_klasifikaciju$fiksni_lanser <- 
+  as.factor(rakete_za_klasifikaciju$fiksni_lanser)
+```
+
+Sada treba odrediti klasifikator za ovo obeležje.
+
+Porediće se dva načina predviđanja unakrsnom validacijom. Prvi je **RandomForest** gde se problem nebalansiranih podataka rašava uvođenjem težina.
+
+```{r, message=FALSE}
+library(pROC)
+library(MLmetrics)
+library(randomForest)
+rakete_za_klasifikaciju$fiksni_lanser <- 
+  as.factor(rakete_za_klasifikaciju$fiksni_lanser)
+
+set.seed(126)
+foldovi <- createFolds(rakete_za_klasifikaciju$fiksni_lanser, k = 5)
+cv_random_forest <- lapply(foldovi, function(fold_indeksi) {
+  train_data <- rakete_za_klasifikaciju[-fold_indeksi, ]
+  test_data <- rakete_za_klasifikaciju[fold_indeksi, ]
+  
+  train_data$fiksni_lanser <- as.factor(train_data$fiksni_lanser)
+  test_data$fiksni_lanser <- as.factor(test_data$fiksni_lanser)
+  
+  w1 <- sum(train_data$fiksni_lanser == 1)/length(train_data$fiksni_lanser)
+  w0 <- 1
+  
+  rf_model <- randomForest(fiksni_lanser ~ ., data = train_data, mtry = 3, 
+                           ntree = 500, classwt = c(w0,w1))
+  
+  test_predikcije <- predict(rf_model, test_data, type = "prob")[, 2]
+  
+  auc <- roc(test_data$fiksni_lanser, test_predikcije)$auc
+  binarne_predikcije <- ifelse(test_predikcije > 0.5, 1, 0)
+  f1 <- F1_Score(test_data$fiksni_lanser, binarne_predikcije)
+  tacnost <- mean(binarne_predikcije == test_data$fiksni_lanser)
+  tabela <- matrix(c(auc, tacnost, f1))
+  
+  return(tabela)
+})
+
+vektor <- 1:15
+auc <- mean(unlist(cv_random_forest)[vektor %% 3 == 1])
+tacnost <- mean(unlist(cv_random_forest)[vektor %% 3 == 2])
+f1 <- mean(unlist(cv_random_forest)[vektor %% 3 == 0])
+
+rezultati <- data.frame(
+  Metrika = c("Tačnost", "AUC", "F1-score"),
+  Srednji_R2 = c(tacnost, auc, f1)
+)
+print(rezultati)
+```
+
+Nebalansiranost podataka možemo rešiti i na drugi način, pomoću funkcije SMOTE iz paketa smotefamily. 
+
+**SMOTE (Synthetic Minority Oversampling Technique)** je metoda za rešavanje problema nebalansiranih podataka, koja radi tako što generiše sintetičke primere za manjinsku klasu na osnovu postojećih primera, koristeći interpolaciju između k najbližih suseda, čime se povećava zastupljenost manjinske klase i balansira skup podataka, što može poboljšati tačnost i generalizaciju modela.
+
+```{r}
+library(smotefamily)
+balansirani_podaci <- SMOTE(rakete_za_klasifikaciju[,-12], 
+                            rakete_za_klasifikaciju[,12], K=3)
+balansirani_podaci <- balansirani_podaci$data
+```
+
+Na balansiranim podacima napraviću Ridge model.
+
+```{r, message=FALSE}
+
+set.seed(126)
+foldovi <- createFolds(balansirani_podaci$class, k = 13)
+
+balansirani_podaci$class <- as.numeric(balansirani_podaci$class)
+
+library(glmnet)
+cv_results_ridge <- lapply(foldovi, function(fold_indeksi) {
+  train_data <- balansirani_podaci[-fold_indeksi, ]
+  test_data <- balansirani_podaci[fold_indeksi, ]
+  
+  X_train <- as.matrix(train_data[, -12])
+  y_train <- train_data$class
+  X_test <-  as.matrix(test_data[, -12])
+  y_test <- test_data$class
+  
+  
+  ridge_model <- cv.glmnet(X_train, y_train, alpha = 0)
+  najbolje_lambda <- ridge_model$lambda.min
+  final_ridge_model <- glmnet(X_train, y_train, alpha = 1, lambda = najbolje_lambda)
+  predikcije <- predict(final_ridge_model, X_test, type = "response")
+  binarne_predikcije <- ifelse(predikcije > 0.5, 1, 0)  
+  
+  tacnost <- mean(binarne_predikcije == y_test)
+  f1 <- F1_Score(y_test, binarne_predikcije, positive = "1")
+  roc_curve <- roc(response = y_test, predictor = as.vector(predikcije)) 
+  auc <- auc(roc_curve)
+  
+  return(c(auc,tacnost,f1))
+})
+
+vektor <- 1:15
+
+auc <- mean(unlist(cv_results_ridge)[vektor %% 3 == 1])
+tacnost <- mean(unlist(cv_results_ridge)[vektor %% 3 == 2])
+f1 <- mean(unlist(cv_results_ridge)[vektor %% 3 == 0])
+
+rezultati <- data.frame(
+  Metrika = c("Tačnost", "AUC", "F1-score"),
+  Mean_R2 = c(tacnost, auc, f1)
+)
+print(rezultati) 
+ 
+
+```
+
+Malo boljie rezultate daje Ridge model.
+
+```{r}
+X <- as.matrix(balansirani_podaci[, -12])
+y <- balansirani_podaci$class
+ridge_model <- cv.glmnet(X, y, alpha = 0)
+najbolje_lambda <- ridge_model$lambda.min
+finalni_ridge_model <- glmnet(X, y, alpha = 1, lambda = najbolje_lambda)
+```
+
+## Klasterizacija
+
+Sve podatke ću staviti u novu tabelu.
+
+```{r sredjivanje baze}
+rakete_za_klasterizaciju <- rakete[rakete$klasa_po_dometu != 2,]
+rakete_za_klasterizaciju <- rakete_za_klasterizaciju %>% select(-max_domet_km)
+rakete_za_klasterizaciju <- rakete_za_klasterizaciju %>% select(-klasa_po_dometu)
+rakete_za_klasterizaciju <- rakete_za_klasterizaciju %>% select(-NATO_ime)
+rakete_za_klasterizaciju <- rakete_za_klasterizaciju %>% select(-rusko_ime)
+```
+
+Sada ću za ovako sređene podatke da nađem klastere.
+
+```{r klasterizacija, fig.align='center'}
+library(dbscan)
+kNNdistplot(rakete_za_klasterizaciju, k = 8)
+abline(h=15000) 
+dbscan_model <- dbscan::dbscan(rakete_za_klasterizaciju, eps = 15000, minPts = 9)  
+plot(rakete_za_klasterizaciju, col = dbscan_model$cluster) 
+```
+
+```{r rezultat klasterizacije}
+dbscan_model$cluster
+```
+
+Posmatrajmo sada rakete u klasterima.
+
+```{r pregled klastera}
+prvi_klaster <- rakete_za_klasterizaciju[dbscan_model$cluster == 1, ]
+drugi_klaster <- rakete_za_klasterizaciju[dbscan_model$cluster == 2,]
+summary(prvi_klaster)
+summary(drugi_klaster)
+```
+
+Rakete u prvom klasteru su značajno teže i duže, imaju veći kalibar i veći broj podglava i broj motora. Sve ukazuje na to da su ove rakete veće i snažnije, pa možemo pretpostaviti da klasteri predstavljaju domet raketa.
+
+Ostaje nam da posmatramo tačke šuma.
+
+```{r tačke šuma}
+noise_points <- rakete_za_klasterizaciju[dbscan_model$cluster == 0, ]
+summary(noise_points)
+```
+
+Od 5 tačaka šuma 4 imaju vrednost 1 za način lansiranja, tj. njihov način lansiranja Silos. Takođe imaju veliki broj podglava, duže su od ostalih i imaju veći kalibar, a i teže su značajno. Po svim osobinama one liče na podatke iz klastera 1, tj. deluju kao da su još jače i snažnije od ovih i samim tim imaju i veći domet od onih iz klastera 2.
+
+```{r konačni klasteri}
+rakete_za_klasterizaciju$klasterizacija <- dbscan_model$cluster
+rakete_za_klasterizaciju$klasterizacija[dbscan_model$cluster==0] <- 1 
+print(rakete_za_klasterizaciju$klasterizacija)
+```
+
+## Sažetak o političkim situacijama i razvoju oružja (raketa) u Rusiji i Kini (1988-2018)
+
+**Ključna imena i događaji:**
+
+1. Ronald Reagan i Mihail Gorbačev
+Potpisivanje INF sporazuma (1987):
+Sporazum o nuklearnim snagama srednjeg dometa između SAD-a i Sovjetskog Saveza bio je presudan događaj u kontroli naoružanja. Sporazum je stupio na snagu 1988. godine i zahtevao je eliminaciju svih kopnenih balističkih i krstarećih raketa dometa od 500 do 5.500 kilometara. Kao rezultat, uništene su hiljade sovjetskih raketa, što je označilo kraj razvoja srednjedometnih raketa u tom periodu.
+
+2. Raspad Sovjetskog Saveza (1991)
+Nakon raspada, Rusija je nasledila većinu infrastrukturnih kapaciteta za razvoj raketa, ali se suočila s ekonomskim izazovima koji su ograničili vojna ulaganja. Fokus je preusmeren na interkontinentalne balističke rakete (ICBM) i krstareće rakete koje nisu bile obuhvaćene INF sporazumom.
+
+3. Obnova sumnji na kršenje INF sporazuma (2010-te)
+Do 2010-ih, SAD su optužile Rusiju za razvoj raketa koje krše sporazum. Rusija je negirala optužbe, ali je tvrdila da su američki raketni sistemi u Evropi takođe u suprotnosti sa sporazumom.
+
+4. Kolaps INF sporazuma (2018-2019)
+Godine 2018, SAD su najavile povlačenje iz sporazuma zbog ruskih kršenja. Povlačenje je završeno 2019. godine, što je označilo kraj restrikcija za razvoj i raspoređivanje srednjedometnih raketa.
+
+**Politički kontekst i uticaj na proizvodnju oružja:**
+
+1. Rusija (1988-2018)
+U okviru INF sporazuma, Rusija je obustavila razvoj srednjedometnih kopnenih raketa. Ekonomske poteškoće 1990-ih usporile su modernizaciju, ali je ponovni rast finansiranja 2000-ih doveo do razvoja naprednih sistema, uključujući hipersonične projektile.
+
+2. Kina (istorijski razvoj):
+Kina nije bila deo INF sporazuma i nastavila je s razvojem srednjedometnih raketa tokom ovog perioda (Dongfeng serija (DF)). Kina je razvila raznovrsne balističke rakete, poput DF-21 (srednjeg dometa) i DF-26, koje su omogućile projekciju sile u Pacifičkom regionu. Fokus na regionalnim kapacitetima omogućio je Kini stratešku prednost u Istočnoj Aziji, posebno u odnosu na Tajvan i američke baze u regionu.
+
+**Značaj političkih dogovora na vojnu industriju:**
+INF sporazum (1988): Direktno je zaustavio razvoj kopnenih raketa srednjeg dometa u Rusiji i SAD-u, što je uticalo na globalni balans snaga.
+Raspad sporazuma (2018): Omogućio je ponovni razvoj srednjedometnih sistema, što je dovelo do povećane napetosti između SAD-a, Rusije i Kine.
+
+Kroz bazu podataka možemo uočiti ovu i neke druge specifičnosti između ove dve države.
+
+```{r grafici, echo=FALSE, fig.align='center'}
+library(ggplot2)
+library(tidyr)
+par(mfrow = c(2, 2))  
+barplot(table(rakete$klasa_po_dometu[rakete$drzava == 2]),
+        main = "Kina",
+        col = "lightblue",
+        xlab = "Klasa po dometu",
+        ylab = "Frequency")
+barplot(table(rakete$klasa_po_dometu[rakete$drzava == 1]),
+        main = "Rusija",
+        col = "lightgreen",
+        xlab = "Klasa po dometu",
+        ylab = "Frequency")
+barplot(table(rakete$nacin_lansiranja[rakete$drzava == 2]),
+        main = "Kina",
+        col = "lightblue",
+        xlab = "Nacin Lansiranja",
+        ylab = "Frequency")
+barplot(table(rakete$nacin_lansiranja[rakete$drzava == 1]),
+        main = "Rusija",
+        col = "lightgreen",
+        xlab = "Nacin Lansiranja",
+        ylab = "Frequency")
+```
+
+**Zašto Rusija ima više raketa lansiranih iz vode od Kine (do 2018)?**
+
+1. Sovjetski Savez
+Tokom Hladnog rata bio je globalna supersila sa razvijenom mornaricom i značajnim ulaganjem u podmorničke nuklearne snage. Zašto?
+
+2. Geopolitika i strategijska doktrina
+Rusija (kao deo Sovjetskog saveza) je površinski velika zemlja sa razvijenim uticajem i projekcijom snage u svetskim okeanima (Arktik, Pacifik, Crno more). Voda je prirodni prostor za pozicioniranje mornaričkih snaga, jer omogućava globalni domet i fleksibilnost, čak i u slučaju ugroženosti kopnenih baza.
+
+3. Kina: Fokus na regionalne kapacitete
+Kina je tradicionalno bila kontinentalna sila s prioritetom na kopnenim snagama. Modernizacija mornarice započela je tek krajem 20. veka. Većina raketa bila je namenjena za kopnenu upotrebu ili regionalne ciljeve (DF serija), jer je njen fokus bio na sukobe u Pacifičkom regionu (npr. Tajvan, Južnokinesko more). Dakle, Kina istorijski ima manje iskustva s pomorskim nuklearnim sistemima jer joj je fokus na regionalnoj dominaciji, a ne na globalnoj projekciji sile.
+
+4. Tehnološke i finansijske prednosti Rusije
+Rusija je nasledila sovjetsku infrastrukturu i stručnost, što je omogućilo kontinuirani razvoj mornaričkih sistema.
+Kina je do 2018. još uvek bila u fazi "sustizanja" Rusije i SAD-a u tehnološkom smislu, ali je nakon 2018. ubrzala razvoj mornaričkih sistema.
+
+
+
