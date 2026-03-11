@@ -1,1 +1,7 @@
 /output/
+
+# R history
+.Rhistory
+
+# log files
+*.log
