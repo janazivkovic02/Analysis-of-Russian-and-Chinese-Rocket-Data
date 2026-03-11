@@ -1,16 +1,24 @@
-This project analyzes a dataset of Russian and Chinese ballistic missiles using statistical modeling and machine learning techniques implemented in R.
+# Rocket Data Analysis
 
-The analysis includes:
-Data preprocessing and feature engineering
+Statistical analysis of Russian and Chinese rocket launch data.
 
-Missing value imputation (interpolation + PCA-based regression)
+## Goal
+Explore patterns in launch frequency, success rates, and technological development.
 
-Prediction of maximum range (max_domet_km)
+## Methods
+- Exploratory Data Analysis
+- Time series visualization
+- Statistical comparison of launch trends
 
-Classification of launcher type
+## Tools
+- R
+- tidyverse
+- ggplot2
 
-Clustering using DBSCAN
+## Repository structure
+data/ – raw data  
+scripts/ – analysis scripts  
+figures/ – generated plots  
 
-Interpretation in historical and geopolitical context (1988–2018)
-
-The work was completed as part of the course Statistical Software 3 (2025).
+## Results
+Key findings about launch trends and differences between programs.
